@@ -1,75 +1,87 @@
--- Configuration variables
 local KNOCKOUT_HEALTH_THRESHOLD = 60
-local RAGDOLL_DURATION = 12000 -- 12 seconds in milliseconds
-local KNOCKOUT_RECOVERY_TIME = 12 -- Recovery time in seconds after being knocked out
-local HEALTH_REGEN_PER_TICK = 5 -- Health points regenerated per tick
-local TICK_INTERVAL_KNOCKED_OUT = 1000 -- Milliseconds, shortened for finer timing
-local TICK_INTERVAL_ACTIVE = 500 -- Milliseconds
-local PlayingHeartbeat = false
+local RAGDOLL_DURATION          = 12000
+local KNOCKOUT_RECOVERY_TIME    = 12
+local HEALTH_REGEN_PER_TICK     = 5
+local TICK_INTERVAL_KNOCKED_OUT = 1000
+local TICK_INTERVAL_ACTIVE      = 500
+local KNOCKOUT_COOLDOWN         = 300000 -- 5 Min
+local knockedOut       = false
+local heartbeatActive  = false
+local knockoutCooldownUntil = 0
 
-Citizen.CreateThread(function()
-    local knockedOut = false
-    local wait = KNOCKOUT_RECOVERY_TIME
+local function StartHeartbeat()
+    if heartbeatActive then return end
+    heartbeatActive = true
+
+    CreateThread(function()
+        while heartbeatActive do
+            PlaySoundFrontend("Heartbeat", "RDRO_Sniper_Tension_Sounds", true)
+            Citizen.Wait(1500)
+        end
+    end)
+end
+
+local function StopHeartbeat()
+    heartbeatActive = false
+end
+
+local function EndKnockout()
+    if not knockedOut then return end
+    knockedOut = false
+    knockoutCooldownUntil = GetGameTimer() + KNOCKOUT_COOLDOWN
+
+    StopHeartbeat()
+    SetPlayerInvincible(PlayerId(), false)
+    Citizen.InvokeNative(0xB4FD7446BAB2F394, "DeathFailMP01")
+    ResetPedRagdollTimer(PlayerPedId())
+end
+
+CreateThread(function()
+    local recoveryTimer = KNOCKOUT_RECOVERY_TIME
 
     while true do
         local player = PlayerPedId()
-        local isPlayerDead = IsEntityDead(player)
-        
-        -- Checks if the player is knocked out but not dead
-        if Citizen.InvokeNative(0x4E209B2C1EAD5159, player) and not isPlayerDead then
-            if GetEntityHealth(player) < KNOCKOUT_HEALTH_THRESHOLD and not knockedOut then
-                knockedOut = true
-                StartSoundLoop("Heartbeat", "RDRO_Sniper_Tension_Sounds")
-                TriggerEvent('vorp:Tip', "You're knocked out!", 5000)
+
+        if not knockedOut then
+            if GetGameTimer() > knockoutCooldownUntil
+                and not IsEntityDead(player)
+                and Citizen.InvokeNative(0x4E209B2C1EAD5159, player)
+                and GetEntityHealth(player) < KNOCKOUT_HEALTH_THRESHOLD
+            then
+                knockedOut    = true
+                recoveryTimer = KNOCKOUT_RECOVERY_TIME
+
+                StartHeartbeat()
+                TriggerEvent("vorp:Tip", "Du wurdest bewusstlos!", 5000)
                 Citizen.InvokeNative(0xAE99FB955581844A, player, RAGDOLL_DURATION, RAGDOLL_DURATION, 0, false, false, false)
                 Citizen.InvokeNative(0x4102732DF6B4005F, "DeathFailMP01")
                 SetPlayerInvincible(PlayerId(), true)
             end
-        end
 
-        -- Handling the knockout state
-        if knockedOut then
+            Citizen.Wait(TICK_INTERVAL_ACTIVE)
+        else
             Citizen.Wait(TICK_INTERVAL_KNOCKED_OUT)
-            if not isPlayerDead then
-                if wait > 0 then
-                    wait = wait - 1
-                    SetEntityHealth(player, GetEntityHealth(player) + HEALTH_REGEN_PER_TICK) -- Regenerates health
-                else
-                    knockedOut = false
-                    wait = KNOCKOUT_RECOVERY_TIME
-                    StopSoundLoop()
-                    SetPlayerInvincible(PlayerId(), false)
-                    Citizen.InvokeNative(0xB4FD7446BAB2F394, "DeathFailMP01") -- Stop the screen effect
-                    ResetPedRagdollTimer(player)
+
+            player = PlayerPedId()
+
+            if IsEntityDead(player) then
+                EndKnockout()
+            elseif recoveryTimer > 0 then
+                recoveryTimer = recoveryTimer - 1
+                local currentHP = GetEntityHealth(player)
+                if currentHP < KNOCKOUT_HEALTH_THRESHOLD then
+                    local newHP = math.min(currentHP + HEALTH_REGEN_PER_TICK, KNOCKOUT_HEALTH_THRESHOLD)
+                    SetEntityHealth(player, newHP)
                 end
             else
-                -- If the player dies during being knocked out
-                knockedOut = false
-                StopSoundLoop()
-                SetPlayerInvincible(PlayerId(), false)
+                EndKnockout()
             end
-        else
-            Citizen.Wait(TICK_INTERVAL_ACTIVE)
         end
     end
 end)
 
-function StartSoundLoop(audioName, audioRef)
-    -- Starts playing the heartbeat sound loop
-    if not PlayingHeartbeat then
-        PlayingHeartbeat = true
-        Citizen.CreateThread(function()
-            while PlayingHeartbeat do
-                PlaySoundFrontend(audioName, audioRef, true)
-                Citizen.Wait(1500) -- Waits between sound loops
-            end
-        end)
+AddEventHandler("onResourceStop", function(resource)
+    if resource == GetCurrentResourceName() and knockedOut then
+        EndKnockout()
     end
-end
-
-function StopSoundLoop()
-    -- Stops the heartbeat sound loop
-    if PlayingHeartbeat then
-        PlayingHeartbeat = false
-    end
-end
+end)
